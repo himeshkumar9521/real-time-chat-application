@@ -10,16 +10,13 @@ A full-stack real-time chat application that allows users to communicate through
 🔒 Environment-based configuration
 🔄 Real-time updates between users
 🛠️ Tech Stack
-Frontend
-React
-JavaScript
-HTML
-CSS
-Backend
-Node.js
-Express.js
-REST API
-Real-Time Communication
-Socket.IO
-Database
-MongoDB
+* React
+* JavaScript
+* HTML
+* CSS
+* Node.js
+* Express.js
+* REST API
+* Real-Time Communication
+* Socket.IO
+* Database: MongoDb
