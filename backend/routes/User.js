@@ -334,4 +334,97 @@ router.post("follow-request-accept" , async (req,res,next) => {
     }
 });
 
+router.post("follow-request-reject" , async (req,res,next) => {
+    try{
+        const {accepter , person} = req.body();
+
+        const isExist = await User.findOne({person});
+
+        if(!isExist){
+            return res.status(422).json({
+                success:false,
+                messsage:"User is not existed"
+            });
+        }
+
+        const user = await User.findOne({accepter});
+
+        if(!user){
+            return res.status(422).json({
+                success:"false",
+                message:"user not exist"
+            });
+        }
+        user.followRequest = user.followRequest.filter((e) =>{e !== person});
+        await user.save();
+        res.status(200).json({
+            success:true,
+            message:"user-follow request is successfully rejected"
+        });
+    }catch(err){
+        res.status(409).json({
+            success:false,
+            message:"failed to reject request"
+        });
+    }
+});
+
+router.post("unfollow" , async (res,req,next) => {
+    try{
+        const {rejecter , person} = req.body();
+
+        const user = await User.findOne({rejecter});
+        const user2 = await User.findOne({person});
+        if(!user || !person){
+            return res.status(409).json({
+                success:false,
+                message:"user not exist"
+            });
+        }
+
+        user.followers = user.followRequest.filter((e) =>{e !== person});
+
+        await user.save();
+
+        res.status(200).json({
+            success:true,
+            message:"un-follow successfully"
+        });
+    }catch(err){
+        res.status(409).json({
+            success:false,
+            message:"failed to unfollow"
+        });
+    }
+});
+
+router.post("unfollowing" , async (res,req,next) => {
+    try{
+        const {rejecter , person} = req.body();
+
+        const user = await User.findOne({rejecter});
+        const user2 = await User.findOne({person});
+        if(!user || !person){
+            return res.status(409).json({
+                success:false,
+                message:"user not exist"
+            });
+        }
+
+        user.following = user.following.filter((e) =>{e !== person});
+
+        await user.save();
+
+        res.status(200).json({
+            success:true,
+            message:"un-following successfully"
+        });
+    }catch(err){
+        res.status(409).json({
+            success:false,
+            message:"failed to unfollowing"
+        });
+    }
+});
+
 module.exports = router;
