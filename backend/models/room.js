@@ -13,6 +13,7 @@ const messageSchema = new mongoose.Schema(
     },
   },
   { timestamps: true },
+  {_id:true}
 );
 
 const RoomSchema = new mongoose.Schema(
@@ -22,11 +23,32 @@ const RoomSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-    isGroup: {
-      type: Boolean,
-      default: true,
+    type:{
+      type:String,
+      enum:["general" , "group" , "private"],
+      default:"group",
     },
-    messages: [messageSchema],
+    members:{
+      type:[String],
+      default:[],
+    },
+    privateKey:{
+      type:String,
+      unique:true,
+      sparse:true,
+    },
+    // isGroup: {
+    //   type: Boolean,
+    //   default: true,
+    // },
+    createdBy:{
+      type:String,
+      default:null,
+    },
+    messages: {
+      type:[messageSchema],
+      default:[]
+    },
   },
   { timestamps: true },
 );
