@@ -2,109 +2,6 @@ const { connection } = require("mongoose");
 const { Room } = require("./models/room");
 
 const roomUsers = new Map();
-// function socketHandler(io) {
-//   io.on("connection", (socket) => {
-//     let currUsername = null;
-//     let currRoomId = null;
-
-//     socket.on("room:join", async ({ roomId, Username }) => {
-//       if (currUsername && currRoomId) {
-//         socket.leave(currRoomId);
-//         const set = roomUsers.get(currRoomId);
-//         if (set) {
-//           set.delete(currUsername);
-//         }
-//         io.to(currRoomId).emit("room:users", [
-//           ...(roomUsers.get(currRoomId) ?? []),
-//         ]);
-//       }
-
-//       currUsername = Username;
-//       currRoomId = String(roomId);
-//       socket.join(currRoomId);
-
-//       if (!roomUsers.has(currRoomId)) {
-//         roomUsers.set(currRoomId, new Set());
-//       }
-//       roomUsers.get(currRoomId).add(Username);
-//       io.to(currRoomId).emit("room:users", [...roomUsers.get(currRoomId)]);
-
-//       try {
-//         const room = await Room.findById(roomId).lean();
-//         if (room) {
-//           socket.emit(
-//             "room:history",
-//             room.messages.map((m) => ({
-//               id: m._id,
-//               roomId: room._id,
-//               senderUsername: m.senderUsername,
-//               content: m.content,
-//               createdAt: m.createdAt,
-//             })),
-//           );
-//         }
-//       } catch (err) {
-//         console.error("history error:", err);
-//       }
-//     });
-//     socket.on("message:send", async ({ roomId, content, username }) => {
-//       const text = content?.trim();
-
-//       // Check the new username variable
-//       if (!text || !username)
-//         return console.log("❌ Failed: Missing text or username");
-
-//       try {
-//         const room = await Room.findByIdAndUpdate(
-//           roomId,
-//           {
-//             $push: {
-//               // Use the new username variable here 👇
-//               messages: { senderUsername: username, content: text },
-//             },
-//           },
-//           { new: true },
-//         );
-
-//         if (!room) return console.log("❌ Failed: Room not found!");
-
-//         const msg = room.messages.at(-1);
-//         console.log("✅ Saved to DB. Broadcasting to room:", String(roomId));
-
-//         io.to(String(roomId)).emit("message:new", {
-//           id: msg._id,
-//           roomId: room._id,
-//           senderUsername: username, // And use it here 👇
-//           content: text,
-//           createdAt: msg.createdAt,
-//         });
-//       } catch (err) {
-//         console.error("❌ Database Error:", err);
-//       }
-//     });
-//     socket.on("typing:start", ({ roomId }) =>
-//       socket
-//         .to(String(roomId))
-//         .emit("typing:update", { username: currUsername, isTyping: true }),
-//     );
-
-//     socket.on("typing:stop", ({ roomId }) =>
-//       socket
-//         .to(String(roomId))
-//         .emit("typing:update", { username: currUsername, isTyping: false }),
-//     );
-
-//     socket.on("disconnect", () => {
-//       if (currRoomId && currUsername) {
-//         const set = roomUsers.get(currRoomId);
-//         if (set) set.delete(currUsername);
-//         io.to(currRoomId).emit("room:users", [
-//           ...(roomUsers.get(currRoomId) ?? []),
-//         ]);
-//       }
-//     });
-//   });
-// }
 
 function getRoomUsers(roomId){
   const users = roomUsers.get(String(roomId)) || new Map();
@@ -131,5 +28,250 @@ function addSocketToRoom(roomId , socketId , username){
 }
 
 
+function removeSocketFromRoom(roomId , socketId){
+  const id = String(roomId);
+
+  const users = roomUsers.get(id);
+
+  if(!users){
+    return;
+  }
+
+  users.delete(socketId);
+
+  if(users.size === 0){
+    roomUsers.delete(id);
+  }
+}
+
+function isRoomMember(room , username){
+  if(room.type === "general"){
+    return true;
+  }
+
+  return room.members?.some(
+    (member) => {
+      member.toLowerCase() === username.toLowerCase();
+    }
+  );
+}
+
+function socketHandler(io){
+  io.on("connection" ,(socket) => {
+    let currUsername = null;
+    let currRoomId = null;
+
+    // JOIN ROOM
+
+    socket.on("room:join" , async({roomId , Username}) => {
+      try{
+        const username = String(Username || "").trim();
+
+        if(!roomId || !username){
+          socket.emit("room:error" , {
+            message:"roomId and username are required"
+          });
+
+          return;
+        }
+
+        const room = await Room.findById(roomId).lean();
+
+        if(!room){
+          socket.emit("room:erorr" , {
+            message:"Room not found"
+          });
+        }
+
+        if(!isRoomMember(room , username)){
+          socket.emit("room:error" , {
+            message:"you are not a member of this room"
+          });
+
+          return;
+        }
+
+        if(currRoomId){
+          socket.leave(currRoomId);
+
+          removeSocketFromRoom(currRoomId , socket.id);
+
+          emitRoomUsers(io , currRoomId);
+        }
+        currRoomId = String(roomId);
+        currUsername = username;
+
+        socket.join(currRoomId);
+
+        addSocketToRoom(
+          currRoomId,
+          socket.id,
+          currusername
+        );
+
+        emitRoomUsers(io , currRoomId);
+
+        socket.emit("room:history" , (room.messages || []).map((m) => ({
+          id:m.id,
+          roomId:room._id,
+          senderUsername : m.senderUsername,
+          content:m.content,
+          createdAt: m.createdAt
+        })));
+
+
+        socket.emit("room::info" , {
+          id:room.id,
+          name:room.name,
+          type:room.type,
+          members:room.members || [],
+          createdAt : room.createdAt || null
+        });
+
+      }catch(err){
+        console.error("room:join error:" , err);
+
+        socket.emit("room:error",{
+          message:"Failed to join room"
+        });
+      }
+    });
+
+    //send message
+
+    socket.on("message:send" , async({roomId , content}) =>{
+      try{
+        const text = String(content || "").trim();
+        const targetRoomId = String(roomId || "");
+
+        if(!text){
+          socket.emit("message:error",{
+            message:"message cannot be empty"
+          });
+
+          return;
+        }
+
+        if(!currUsername){
+          socket.emit("message:error" , {
+            message:"you are not authenticated"
+          });
+
+          return;
+        }
+
+
+        if(!currRoomId || currRoomId !== targetRoomId){
+          socket.emit("message:error" , {
+            message:"you are not connected to the room"
+          });
+
+          return;
+        }
+
+        const room = await Room.findById(targetRoomId);
+
+        if(!room){
+          socket.emit("message:error" , {
+            message:"Room not found"
+          });
+
+          return;
+        }
+
+        if(!isRoomMember(targetRoomId , currUsername)){
+          socket.emit("message:error" , {
+            message:"you are not a member of this room"
+          });
+
+          return;
+        }
+
+
+        room.messages.push({
+          senderUsername:currUsername,
+          content:text,
+        });
+
+
+        await room.save();
+
+        const msg = room.messages.at(-1);
+
+        io.to(targetRoomId).emit("message:new" , {
+          id:msg._id,
+          roomId:room._id,
+          senderUsername:msg.senderUsername,
+          content:msg.content,
+          createdAt:msg.createdAt
+        });
+
+        console.log(`${username} send message to ${room.name}`);
+  
+      }catch(err){
+        console.error("message:send error:" , err);
+
+        socket.emit("message:error" , {
+          message:"Failed to send message"
+        });
+      }
+    });
+
+
+    socket.on("typing:start" , () =>{
+      if(!currRoomId || !currUsername){
+        return;
+      }
+
+      socket.to(currRoomId).emit("typing:update",{
+        username:currUsername,
+        isTyping:true,
+      });
+    });
+
+    socket.on("typing:stop" , () => {
+      if(!currRoomId || !currUsername){
+        return;
+      }
+
+      socket.to(currRoomId).emit("typing:update",{
+        username:currUsername,
+        isTyping:false
+      });
+    });
+
+    socket.on("room:leave" , () =>{
+      if(!currRoomId){
+        return;
+      }
+
+      const oldRoomId = currRoomId;
+
+      socket.leave(oldRoomId);
+
+      removeSocketFromRoom(oldRoomId,socket.id);
+
+      emitRoomUsers(io , oldRoomId);
+
+      currRoomId = null;
+
+    });
+
+
+    //Disconnect
+
+    socket.on("disconnect" , () => {
+      if(currRoomId){
+        const oldRoomId = currRoomId;
+
+        removeSocketFromRoom(oldRoomId , socket.id);
+        emitRoomUsers(io,oldRoomId);
+
+      }
+
+      console.log(`socket disconnected ${socket.id}`);
+    });
+  });
+}
 
 module.exports = { socketHandler };
