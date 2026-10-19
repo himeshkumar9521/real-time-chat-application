@@ -6,11 +6,20 @@ const UserSchema = new mongoose.Schema(
             type:String,
             trim:true,
             required:true,
+            minlength:2,
+            maxlength:30,
+            match: /^[A-Za-z]{2,30}$/,
+        },
+        usernameKey:{
+            type:String,
+            required:true,
+            unique:true,
+            immutable:true
         },
         email:{
             type:String,
             unique:true,
-            require:true,
+            required:true,
             trim:true,
         },
         emailVerified:{
@@ -27,9 +36,7 @@ const UserSchema = new mongoose.Schema(
         },
         password:{
             type:String,
-            unique:true,
             required:true,
-            trim:true
         },
         followers:{
             type:[String],
@@ -37,11 +44,11 @@ const UserSchema = new mongoose.Schema(
         },
         followRequest:{
             type:[String],
-            defualt:[]
+            default:[]
         },
         following:{
             type:[String],
-            defualt:[]
+            default:[]
         },
         rooms:{
             type:[String],
@@ -51,7 +58,15 @@ const UserSchema = new mongoose.Schema(
     {
         timestamps:true
     }
-)
+);
+
+UserSchema.pre('validate' , function(next){
+    if(this.username != null){
+        this.usernameKey = this.username.trim().toLowerCase();
+    }
+
+    next();
+});
 
 const User = mongoose.model("User" , UserSchema);
 module.exports = {User};
