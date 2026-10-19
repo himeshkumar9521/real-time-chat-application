@@ -6,7 +6,11 @@ const registerValidater = [
     .notEmpty()
     .withMessage("username is required")
     .isLength({min:2,max:30})
-    .withMessage("username length must between 2 to 30"),
+    .withMessage("username length must between 2 to 30")
+    .matches(/^[A-Za-z]{2,30}$/)
+    .withMessage(
+      "Username must contain only English letters (A-Z, a-z)"
+    ),
 
     body("email")
     .trim()

@@ -1,430 +1,1073 @@
-const {Router} = require('express');
-const { User } = require('../models/user');
-const crypto = require('crypto');
-const bcrypt = require('bcrypt');
-const { registerValidater } = require('../validator/validation-user');
-const { validate } = require('../auth-middleware/auth-verified');
-const { generateToken } = require('../utils/emailValidation');
-const { sendEmailVarification } = require('../utils/email');
+const { Router } = require("express");
+const crypto = require("crypto");
+const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+
+const { User } = require("../models/user");
+const { Room } = require("../models/room");
+
+const { registerValidater } = require("../validator/validation-user");
+const { validate } = require("../auth-middleware/auth-verified");
+const { generateToken } = require("../utils/emailValidation");
+const { sendEmailVarification } = require("../utils/email");
+
 const router = Router();
 
-router.post("/register" ,registerValidater,validate, async (req,res,next) => {
-    try{
-    const {username , email , password} = req.body;
-    const existingUser = await User.findOne({email});
-    if(existingUser){
-        res.status(409).json({
-            message:"User is already exist"
-        })  
-        const {token,hashedToken , expire} = generateToken();
-    
-        existingUser.username = username;
-        existingUser.password = await bcrypt.hash(password,12);
-        existingUser.emailVerificationToken = hashedToken;
-        existingUser.emailVerifcationexpire = expire;
-    
-        await existingUser.save();
-    
-        await sendEmailVarification(email,token);
-    
-        return res.status(200).json({
-            message:"email is already exist but not verified.So new verification link has been send"
-        });
-    }
+// Usernames: English letters only, 2-30 characters.
+const USERNAME_PATTERN = /^[A-Za-z]{2,30}$/;
 
-    const {token,hashedToken,expire} = generateToken();
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/",
+};
 
-    const hashpassword = await bcrypt.hash(password,12);
-
-    await User.create({
-        username:username,
-        email:email,
-        password:hashpassword,
-        emailVerified:false,
-        emailVerificationToken:hashedToken,
-        emailVerifcationexpire:expire
-    })
-
-    await sendEmailVarification(email,token);
-
-    return res.status(200).json({
-        success:true,
-        message:"Registration successful.please check the email verify"
-    });
-
-}catch(err){
-
-    res.json({message:err.message});
+// Preserve username capitalization, but compare usernames
+// without considering capitalization.
+function cleanUsername(value) {
+  return String(value ?? "").trim();
 }
-});
 
-router.get("/email-verify" , async (req,res,next) => {
-    try{
-        const {token} = req.query;
+// Preserve email capitalization.
+function cleanEmail(value) {
+  return String(value ?? "").trim();
+}
 
-        if(!token){
-            return res.status(404).json({
-                message:"token is required"
-            })
-        }
-        const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-        const user = await User.findOne({emailVerificationToken:hashedToken});
+function usernameRegex(username) {
+  return new RegExp(
+    `^${escapeRegex(username)}$`,
+    "i"
+  );
+}
 
-        if(!user){
-            return res.status(400).json({
-                message:"invalid token"
-            });
-        }
+// Case-insensitive username lookup.
+async function findUserByUsername(username) {
+  const cleaned = cleanUsername(username);
 
-        if(!user.emailVerifcationexpire || user.emailVerifcationexpire< new Date()){
-            return res.status(400).json({
-                message:"verification token expired"
-            });
-        }
+  if (!cleaned) return null;
 
-        user.emailVerified = true;
-        user.emailVerifcationexpire = null;
-        user.emailVerificationToken = null;
+  return User.findOne({
+    username: usernameRegex(cleaned),
+  });
+}
 
-        await user.save();
+// Exact, case-sensitive email lookup.
+// Assumes the MongoDB collection uses its default
+// case-sensitive collation.
+async function findUserByEmail(email) {
+  const cleaned = cleanEmail(email);
 
+  if (!cleaned) return null;
 
-        return res.status(200).json({
-            success:true,
-            message:"verification successfully done"
-        })
+  return User.findOne({
+    email: cleaned,
+  });
+}
+
+function hasUsername(values, username) {
+  const wanted = cleanUsername(username).toLowerCase();
+
+  return Array.isArray(values) &&
+    values.some(
+      (value) =>
+        cleanUsername(value).toLowerCase() === wanted
+    );
+}
+
+function addUsername(values, username) {
+  const result = Array.isArray(values) ? [...values] : [];
+
+  if (username && !hasUsername(result, username)) {
+    result.push(username);
+  }
+
+  return result;
+}
+
+function removeUsername(values, username) {
+  const wanted = cleanUsername(username).toLowerCase();
+
+  return (Array.isArray(values) ? values : []).filter(
+    (value) =>
+      cleanUsername(value).toLowerCase() !== wanted
+  );
+}
+
+function replaceUsername(values, oldUsername, newUsername) {
+  const oldName = cleanUsername(oldUsername).toLowerCase();
+
+  const result = [];
+  const seen = new Set();
+
+  for (const value of Array.isArray(values) ? values : []) {
+    const nextValue =
+      cleanUsername(value).toLowerCase() === oldName
+        ? newUsername
+        : value;
+
+    const key = cleanUsername(nextValue).toLowerCase();
+
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      result.push(nextValue);
     }
-    catch(err){
-        res.status(422).json({
-            message:"failed to verify",
-            err
+  }
+
+  return result;
+}
+
+// Authentication middleware.
+// Accepts the login cookie or a Bearer token.
+function requireAuth(req, res, next) {
+  const secret = process.env.JWT_SECRET;
+
+  if (!secret) {
+    return res.status(500).json({
+      message: "JWT_SECRET is not configured",
+    });
+  }
+
+  const authorization = req.get("authorization") || "";
+
+  const bearerToken = authorization.startsWith("Bearer ")
+    ? authorization.slice(7).trim()
+    : "";
+
+  const token = req.cookies?.token || bearerToken;
+
+  if (!token) {
+    return res.status(401).json({
+      message: "Authentication required",
+    });
+  }
+
+  try {
+    const payload = jwt.verify(token, secret);
+
+    const userId =
+      payload.userid ||
+      payload.userId ||
+      payload.sub;
+
+    if (!userId) {
+      return res.status(401).json({
+        message: "Invalid authentication token",
+      });
+    }
+
+    req.authUserId = String(userId);
+
+    return next();
+  } catch (err) {
+    return res.status(401).json({
+      message: "Invalid or expired authentication token",
+    });
+  }
+}
+
+async function getAuthenticatedUser(req) {
+  return User.findById(req.authUserId);
+}
+
+// Update username references in the existing string-based
+// relationship arrays and room memberships.
+async function updateUsernameReferences(
+  oldUsername,
+  newUsername
+) {
+  const pattern = usernameRegex(oldUsername);
+
+  const relatedUsers = await User.find({
+    $or: [
+      { followers: pattern },
+      { following: pattern },
+      { followRequest: pattern },
+    ],
+  });
+
+  for (const relatedUser of relatedUsers) {
+    relatedUser.followers = replaceUsername(
+      relatedUser.followers,
+      oldUsername,
+      newUsername
+    );
+
+    relatedUser.following = replaceUsername(
+      relatedUser.following,
+      oldUsername,
+      newUsername
+    );
+
+    relatedUser.followRequest = replaceUsername(
+      relatedUser.followRequest,
+      oldUsername,
+      newUsername
+    );
+
+    await relatedUser.save();
+  }
+
+  const affectedRooms = await Room.find({
+    members: pattern,
+  });
+
+  for (const room of affectedRooms) {
+    room.members = replaceUsername(
+      room.members,
+      oldUsername,
+      newUsername
+    );
+
+    // Keep private room identifiers consistent with the
+    // lowercase canonical key used by the room routes.
+    if (
+      room.type === "private" &&
+      room.members.length === 2
+    ) {
+      room.privateKey = room.members
+        .map((member) => member.toLowerCase())
+        .sort()
+        .join(":");
+
+      const members = [...room.members].sort((a, b) =>
+        a.toLowerCase().localeCompare(b.toLowerCase())
+      );
+
+      room.name = `${members[0]} & ${members[1]}`;
+    }
+
+    await room.save();
+  }
+}
+
+// ------------------------------------------------------
+// REGISTER
+// POST /api/user/register
+// ------------------------------------------------------
+
+router.post(
+  "/register",
+  registerValidater,
+  validate,
+  async (req, res) => {
+    try {
+      const username = cleanUsername(req.body?.username);
+      const email = cleanEmail(req.body?.email);
+      const password = String(req.body?.password ?? "");
+
+      if (!username || !email || !password) {
+        return res.status(400).json({
+          success: false,
+          message: "Username, email, and password are required",
         });
-    }
-});
+      }
 
-router.post("/log-in" , async (req,res,next) => {
-    try{
-        const {email,password} = req.body;
+      if (!USERNAME_PATTERN.test(username)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Username must contain only English letters (A-Z, a-z) and be 2-30 characters long",
+        });
+      }
 
-        const user = await User.findOne({email:email});
-        if(!user){
-            return res.status(404).json({
-                success:false,
-                message:"User not exist"
-            });
-        }
-        const isMatch = await bcrypt.compare(password,user.password);
-        if(!isMatch){
-            return res.status(422).json({
-                success:false,
-                message:"incorrect password",
-            })
-        }
+      // Email lookup is case-sensitive.
+      const existingEmailUser = await findUserByEmail(email);
 
-        if(user.emailVerified === false){
-
-            const {token,hashtoken , expire} = generateToken();
-
-            user.emailVerifcationexpire = expire;
-            user.emailVerificationToken = hashtoken;
-
-            await user.save();
-
-            await sendEmailVarification(token , email);
-            return res.status(422).json({
-                success:false,
-                message:"user email is not verified.verification link has been send"
-            })
+      if (existingEmailUser) {
+        if (existingEmailUser.emailVerified) {
+          return res.status(409).json({
+            success: false,
+            message: "An account with this email already exists",
+          });
         }
 
-        const payload = {
-            userid : user._id,
-            username : user.username
-        }
+        // Do not change an existing account's password
+        // or username through the registration endpoint.
+        const {
+          token,
+          hashedToken,
+          expire,
+        } = generateToken();
 
-        const jwtToken = jwt.sign(
-            payload,
-            process.env.JWT_SECRET,
-            {
-            expiresIn:"1d"
-            }
+        existingEmailUser.emailVerificationToken = hashedToken;
+        existingEmailUser.emailVerifcationexpire = expire;
+
+        await existingEmailUser.save();
+
+        await sendEmailVarification(
+          existingEmailUser.email,
+          token
         );
 
-        res.cookie("token" , jwtToken , {
-            httpOnly:true,
-            secure:"p" === "p",
-            sameSite:"lax",
-            maxAge:24*60*60*1000
+        return res.status(200).json({
+          success: true,
+          message:
+            "This email is not verified yet. A new verification link has been sent",
         });
+      }
 
-        res.status(200).json({
-            success:true,
-            message:"login successfully",
-            jwtToken
-        });
+      // Username lookup is case-insensitive.
+      const existingUsername =
+        await findUserByUsername(username);
 
-    }
-    catch(err){
-        res.status(409).json({
-            success:false,
-            message:"failed to login",
-            err
+      if (existingUsername) {
+        return res.status(409).json({
+          success: false,
+          message: "This username is already taken",
         });
+      }
+
+      const {
+        token,
+        hashedToken,
+        expire,
+      } = generateToken();
+
+      const hashedPassword = await bcrypt.hash(password, 12);
+
+      const user = await User.create({
+        username,
+        email,
+        password: hashedPassword,
+        emailVerified: false,
+        emailVerificationToken: hashedToken,
+        emailVerifcationexpire: expire,
+        followers: [],
+        followRequest: [],
+        following: [],
+        rooms: [],
+      });
+
+      await sendEmailVarification(user.email, token);
+
+      return res.status(201).json({
+        success: true,
+        message:
+          "Registration successful. Please check your email to verify your account",
+      });
+    } catch (err) {
+      console.error("Registration error:", err);
+
+      if (err.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: "Email or username is already in use",
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: "Registration failed. Please try again",
+      });
     }
+  }
+);
+
+// ------------------------------------------------------
+// VERIFY EMAIL
+// GET /api/user/email-verify?token=...
+// ------------------------------------------------------
+
+router.get("/email-verify", async (req, res) => {
+  try {
+    const token = String(req.query.token ?? "").trim();
+
+    if (!token) {
+      return res.status(400).json({
+        message: "Verification token is required",
+      });
+    }
+
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
+
+    const user = await User.findOne({
+      emailVerificationToken: hashedToken,
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid verification token",
+      });
+    }
+
+    const expiresAt = user.emailVerifcationexpire;
+
+    if (!expiresAt || expiresAt < new Date()) {
+      return res.status(400).json({
+        message: "Verification token has expired",
+      });
+    }
+
+    user.emailVerified = true;
+    user.emailVerifcationexpire = null;
+    user.emailVerificationToken = null;
+
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Email verification successful",
+    });
+  } catch (err) {
+    console.error("Email verification error:", err);
+
+    return res.status(500).json({
+      message: "Failed to verify email",
+    });
+  }
 });
 
-router.get("/logout" ,  (req,res,next) => {
-    try{
-    res.clearCookie("token" , {
-        httpOnly:true,
-        secure:"production" === "production",
-        sameSite:"lax"
+// ------------------------------------------------------
+// LOGIN
+// POST /api/user/log-in
+// ------------------------------------------------------
+
+router.post("/log-in", async (req, res) => {
+  try {
+    const email = cleanEmail(req.body?.email);
+    const password = String(req.body?.password ?? "");
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and password are required",
+      });
+    }
+
+    // Exact, case-sensitive email match.
+    const user = await findUserByEmail(email);
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      password,
+      user.password
+    );
+
+    if (!passwordMatches) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
+    }
+
+    if (!user.emailVerified) {
+      const {
+        token,
+        hashedToken,
+        expire,
+      } = generateToken();
+
+      user.emailVerifcationexpire = expire;
+      user.emailVerificationToken = hashedToken;
+
+      await user.save();
+
+      await sendEmailVarification(user.email, token);
+
+      return res.status(403).json({
+        success: false,
+        message:
+          "Your email is not verified. A new verification link has been sent",
+      });
+    }
+
+    const secret = process.env.JWT_SECRET;
+
+    if (!secret) {
+      console.error("JWT_SECRET is not configured");
+
+      return res.status(500).json({
+        success: false,
+        message: "Server authentication is not configured",
+      });
+    }
+
+    const jwtToken = jwt.sign(
+      {
+        userid: user._id.toString(),
+        username: user.username,
+      },
+      secret,
+      {
+        expiresIn: "1d",
+      }
+    );
+
+    res.cookie("token", jwtToken, {
+      ...COOKIE_OPTIONS,
+      maxAge: 24 * 60 * 60 * 1000,
     });
 
-    res.status(200).json({
-        success:true,
-        message:"logout successfully"
+    return res.status(200).json({
+      success: true,
+      message: "Login successful",
+      // Keep this only if your frontend needs a Bearer token.
+      jwtToken,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+      },
     });
-    }
-    catch(err){
-        res.status(422).json({
-            success:false,
-            message:"falied to logout".
-            err
-        });
-    }   
+  } catch (err) {
+    console.error("Login error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Login failed. Please try again",
+    });
+  }
 });
 
+// ------------------------------------------------------
+// LOGOUT
+// ------------------------------------------------------
 
-router.post("/deleteUser" , async (req,res,next) => {
-    try{
-        const {email} = req.body;
+function logoutHandler(req, res) {
+  res.clearCookie("token", COOKIE_OPTIONS);
 
-        const user = await User.findOne({email:email});
-        
-        if(!user){
-            return res.status(409).json({
-                success:false,
-                message:"user is not exist",
-            });
-        }
-
-        await User.deleteOne({email:email});
-
-        res.clearCookie("token" , {
-            httpOnly:true,
-            secure:"production" === "production",
-            sameSite:"lax"
-        });
-
-        res.status(200).json({
-            success:true,
-            message:"user Deleted successfully"
-        });
-        
-    }catch(err){
-        res.status(404).json({
-            success:false,
-            message:"failed to delete user",
-            err
-        });
-    }
-});
-
-router.post("/change-username" , async (req,res,next) => {
-    const {newUsername , email} = req.body;
-
-    const user = await User.findOne({email:email});
-
-    if(!user){
-        return res.status(404).json({
-            success:false,
-            message:"user not exist"
-        });
-    }
-
-    await User.updateOne({
-        username:newUsername
-    });
-
-    res.status(200).json({
-        success:true,
-        message:"username name is change successfully"
-    });
-});
-
-router.post("/follow-request" , async (req,res,next) => {
-    try{
-
-    const {toFollow , ByFollow} = req.body;
-
-    const user1 = await User.find({toFollow});
-    const user2 = await User.findOne({ByFollow});
-
-    if(!user1 || !user2){
-        return res.status(422).json({
-            success:false,
-            message:"user not  existed"
-        });
-    }
-
-    const ifFollow = user1.followRequest.includes(ByFollow);
-    if(ifFollow){
-            res.status(409).json({
-                success:false,
-                message:"already in request list"
-            });
-    }
-
-    user1.followRequest.push(ByFollow);
-    await user1.save();
-
-    res.status(200).json({
-        success:true,
-        message:"requestd is successfully added"
-    });
-}catch(err){
-       res.status(404).json({
-            success:false,
-            message:"failed request"
-       }); 
+  return res.status(200).json({
+    success: true,
+    message: "Logout successful",
+  });
 }
 
-});
+// GET retained for compatibility with your existing frontend.
+// POST is preferred for a state-changing action.
+router.get("/logout", logoutHandler);
+router.post("/logout", logoutHandler);
 
-router.post("follow-request-accept" , async (req,res,next) => {
-    try{
-        const {toFollow , ByFollow} = req.body;
+// ------------------------------------------------------
+// DELETE ACCOUNT
+// POST /api/user/deleteUser
+// ------------------------------------------------------
 
-    const user1 = await User.find({toFollow});
-    const user2 = await User.findOne({ByFollow});
+router.post("/deleteUser", requireAuth, async (req, res) => {
+  try {
+    const user = await getAuthenticatedUser(req);
 
-    if(!user1 || !user2){
-        return res.status(422).json({
-            success:false,
-            message:"user not  existed"
-        });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Account not found",
+      });
     }
 
-    const ifFollow = user1.followers.includes(ByFollow);
-    if(ifFollow){
-            res.status(409).json({
-                success:false,
-                message:"already follower"
-            });
-    }
+    const pattern = usernameRegex(user.username);
 
-    user1.followRequest = user1.followRequest.filter(users => {users !== ByFollow});
-    await user1.save();
-
-    user1.followers.push(ByFollow);
-    await user1.save();
-
-    res.status(200).json({
-        success:true,
-        message:"requestd is successfully added"
+    const relatedUsers = await User.find({
+      _id: { $ne: user._id },
+      $or: [
+        { followers: pattern },
+        { following: pattern },
+        { followRequest: pattern },
+      ],
     });
-    }catch(err){
-        res.status(422).json({
-            success:false,
-            message:"failed to accept the follow-request"
-        });
+
+    for (const relatedUser of relatedUsers) {
+      relatedUser.followers = removeUsername(
+        relatedUser.followers,
+        user.username
+      );
+
+      relatedUser.following = removeUsername(
+        relatedUser.following,
+        user.username
+      );
+
+      relatedUser.followRequest = removeUsername(
+        relatedUser.followRequest,
+        user.username
+      );
+
+      await relatedUser.save();
     }
+
+    // Remove the user from group memberships.
+    const groupRooms = await Room.find({
+      type: "group",
+      members: pattern,
+    });
+
+    for (const room of groupRooms) {
+      room.members = removeUsername(
+        room.members,
+        user.username
+      );
+
+      await room.save();
+    }
+
+    await User.deleteOne({ _id: user._id });
+
+    res.clearCookie("token", COOKIE_OPTIONS);
+
+    return res.status(200).json({
+      success: true,
+      message: "Account deleted successfully",
+    });
+  } catch (err) {
+    console.error("Delete user error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete account",
+    });
+  }
 });
 
-router.post("follow-request-reject" , async (req,res,next) => {
-    try{
-        const {accepter , person} = req.body();
+// ------------------------------------------------------
+// CHANGE USERNAME
+// POST /api/user/change-username
+// ------------------------------------------------------
 
-        const isExist = await User.findOne({person});
+router.post(
+  "/change-username",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const newUsername = cleanUsername(
+        req.body?.newUsername
+      );
 
-        if(!isExist){
-            return res.status(422).json({
-                success:false,
-                messsage:"User is not existed"
-            });
-        }
-
-        const user = await User.findOne({accepter});
-
-        if(!user){
-            return res.status(422).json({
-                success:"false",
-                message:"user not exist"
-            });
-        }
-        user.followRequest = user.followRequest.filter((e) =>{e !== person});
-        await user.save();
-        res.status(200).json({
-            success:true,
-            message:"user-follow request is successfully rejected"
+      if (!USERNAME_PATTERN.test(newUsername)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Username must contain only English letters (A-Z, a-z) and be 2-30 characters long",
         });
-    }catch(err){
-        res.status(409).json({
-            success:false,
-            message:"failed to reject request"
+      }
+
+      const user = await getAuthenticatedUser(req);
+
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: "Account not found",
         });
+      }
+
+      const duplicate = await findUserByUsername(newUsername);
+
+      if (
+        duplicate &&
+        !duplicate._id.equals(user._id)
+      ) {
+        return res.status(409).json({
+          success: false,
+          message: "This username is already taken",
+        });
+      }
+
+      if (newUsername === user.username) {
+        return res.status(200).json({
+          success: true,
+          message: "Username is unchanged",
+          username: user.username,
+        });
+      }
+
+      const oldUsername = user.username;
+
+      // Update existing string-based references before renaming.
+      await updateUsernameReferences(
+        oldUsername,
+        newUsername
+      );
+
+      user.username = newUsername;
+      await user.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Username changed successfully",
+        username: user.username,
+      });
+    } catch (err) {
+      console.error("Change username error:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to change username",
+      });
     }
+  }
+);
+
+// ------------------------------------------------------
+// SEND FOLLOW REQUEST
+// POST /api/user/follow-request
+// ------------------------------------------------------
+
+router.post(
+  "/follow-request",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const targetUsername = cleanUsername(
+        req.body?.toFollow
+      );
+
+      if (!targetUsername) {
+        return res.status(400).json({
+          success: false,
+          message: "Username to follow is required",
+        });
+      }
+
+      const requester = await getAuthenticatedUser(req);
+      const target = await findUserByUsername(targetUsername);
+
+      if (!requester) {
+        return res.status(401).json({
+          success: false,
+          message: "Account not found",
+        });
+      }
+
+      if (!target) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found",
+        });
+      }
+
+      if (requester._id.equals(target._id)) {
+        return res.status(400).json({
+          success: false,
+          message: "You cannot follow yourself",
+        });
+      }
+
+      if (hasUsername(requester.following, target.username)) {
+        return res.status(409).json({
+          success: false,
+          message: "You are already following this user",
+        });
+      }
+
+      if (hasUsername(target.followRequest, requester.username)) {
+        return res.status(409).json({
+          success: false,
+          message: "Follow request already sent",
+        });
+      }
+
+      target.followRequest = addUsername(
+        target.followRequest,
+        requester.username
+      );
+
+      await target.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Follow request sent",
+      });
+    } catch (err) {
+      console.error("Follow request error:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to send follow request",
+      });
+    }
+  }
+);
+
+// ------------------------------------------------------
+// ACCEPT FOLLOW REQUEST
+// POST /api/user/follow-request-accept
+// ------------------------------------------------------
+
+router.post(
+  "/follow-request-accept",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const requesterUsername = cleanUsername(
+        req.body?.ByFollow ?? req.body?.person
+      );
+
+      if (!requesterUsername) {
+        return res.status(400).json({
+          success: false,
+          message: "Requesting username is required",
+        });
+      }
+
+      const recipient = await getAuthenticatedUser(req);
+      const requester = await findUserByUsername(
+        requesterUsername
+      );
+
+      if (!recipient) {
+        return res.status(401).json({
+          success: false,
+          message: "Account not found",
+        });
+      }
+
+      if (!requester) {
+        return res.status(404).json({
+          success: false,
+          message: "Requesting user not found",
+        });
+      }
+
+      if (!hasUsername(
+        recipient.followRequest,
+        requester.username
+      )) {
+        return res.status(404).json({
+          success: false,
+          message: "Follow request not found",
+        });
+      }
+
+      recipient.followRequest = removeUsername(
+        recipient.followRequest,
+        requester.username
+      );
+
+      recipient.followers = addUsername(
+        recipient.followers,
+        requester.username
+      );
+
+      requester.following = addUsername(
+        requester.following,
+        recipient.username
+      );
+
+      await Promise.all([
+        recipient.save(),
+        requester.save(),
+      ]);
+
+      return res.status(200).json({
+        success: true,
+        message: "Follow request accepted",
+      });
+    } catch (err) {
+      console.error("Accept follow request error:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to accept follow request",
+      });
+    }
+  }
+);
+
+// ------------------------------------------------------
+// REJECT FOLLOW REQUEST
+// POST /api/user/follow-request-reject
+// ------------------------------------------------------
+
+router.post(
+  "/follow-request-reject",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const requesterUsername = cleanUsername(
+        req.body?.person ?? req.body?.ByFollow
+      );
+
+      if (!requesterUsername) {
+        return res.status(400).json({
+          success: false,
+          message: "Requesting username is required",
+        });
+      }
+
+      const recipient = await getAuthenticatedUser(req);
+
+      if (!recipient) {
+        return res.status(401).json({
+          success: false,
+          message: "Account not found",
+        });
+      }
+
+      if (!hasUsername(
+        recipient.followRequest,
+        requesterUsername
+      )) {
+        return res.status(404).json({
+          success: false,
+          message: "Follow request not found",
+        });
+      }
+
+      recipient.followRequest = removeUsername(
+        recipient.followRequest,
+        requesterUsername
+      );
+
+      await recipient.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Follow request rejected",
+      });
+    } catch (err) {
+      console.error("Reject follow request error:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to reject follow request",
+      });
+    }
+  }
+);
+
+// ------------------------------------------------------
+// UNFOLLOW
+// POST /api/user/unfollow
+// ------------------------------------------------------
+
+router.post("/unfollow", requireAuth, async (req, res) => {
+  try {
+    const targetUsername = cleanUsername(
+      req.body?.person ?? req.body?.toUnfollow
+    );
+
+    if (!targetUsername) {
+      return res.status(400).json({
+        success: false,
+        message: "Username to unfollow is required",
+      });
+    }
+
+    const requester = await getAuthenticatedUser(req);
+    const target = await findUserByUsername(targetUsername);
+
+    if (!requester) {
+      return res.status(401).json({
+        success: false,
+        message: "Account not found",
+      });
+    }
+
+    if (!target) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    requester.following = removeUsername(
+      requester.following,
+      target.username
+    );
+
+    target.followers = removeUsername(
+      target.followers,
+      requester.username
+    );
+
+    await Promise.all([
+      requester.save(),
+      target.save(),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      message: "Unfollowed successfully",
+    });
+  } catch (err) {
+    console.error("Unfollow error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to unfollow user",
+    });
+  }
 });
 
-router.post("unfollow" , async (res,req,next) => {
-    try{
-        const {rejecter , person} = req.body();
+// ------------------------------------------------------
+// REMOVE FOLLOWER
+// POST /api/user/unfollowing
+// ------------------------------------------------------
 
-        const user = await User.findOne({rejecter});
-        const user2 = await User.findOne({person});
-        if(!user || !person){
-            return res.status(409).json({
-                success:false,
-                message:"user not exist"
-            });
-        }
+router.post(
+  "/unfollowing",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const followerUsername = cleanUsername(
+        req.body?.person ?? req.body?.follower
+      );
 
-        user.followers = user.followRequest.filter((e) =>{e !== person});
-
-        await user.save();
-
-        res.status(200).json({
-            success:true,
-            message:"un-follow successfully"
+      if (!followerUsername) {
+        return res.status(400).json({
+          success: false,
+          message: "Follower username is required",
         });
-    }catch(err){
-        res.status(409).json({
-            success:false,
-            message:"failed to unfollow"
+      }
+
+      const recipient = await getAuthenticatedUser(req);
+      const follower = await findUserByUsername(
+        followerUsername
+      );
+
+      if (!recipient) {
+        return res.status(401).json({
+          success: false,
+          message: "Account not found",
         });
+      }
+
+      if (!follower) {
+        return res.status(404).json({
+          success: false,
+          message: "Follower not found",
+        });
+      }
+
+      recipient.followers = removeUsername(
+        recipient.followers,
+        follower.username
+      );
+
+      follower.following = removeUsername(
+        follower.following,
+        recipient.username
+      );
+
+      await Promise.all([
+        recipient.save(),
+        follower.save(),
+      ]);
+
+      return res.status(200).json({
+        success: true,
+        message: "Follower removed successfully",
+      });
+    } catch (err) {
+      console.error("Remove follower error:", err);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to remove follower",
+      });
     }
-});
-
-router.post("unfollowing" , async (res,req,next) => {
-    try{
-        const {rejecter , person} = req.body();
-
-        const user = await User.findOne({rejecter});
-        const user2 = await User.findOne({person});
-        if(!user || !person){
-            return res.status(409).json({
-                success:false,
-                message:"user not exist"
-            });
-        }
-
-        user.following = user.following.filter((e) =>{e !== person});
-
-        await user.save();
-
-        res.status(200).json({
-            success:true,
-            message:"un-following successfully"
-        });
-    }catch(err){
-        res.status(409).json({
-            success:false,
-            message:"failed to unfollowing"
-        });
-    }
-});
+  }
+);
 
 module.exports = router;
