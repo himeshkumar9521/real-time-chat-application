@@ -5,15 +5,16 @@ const messageSchema = new mongoose.Schema(
     senderUsername: {
       type: String,
       required: true,
+      trim: true,
     },
     content: {
       type: String,
       required: true,
       trim: true,
+      maxlength: 5000,
     },
   },
-  { timestamps: true },
-  {_id:true}
+  { timestamps: true }
 );
 
 const RoomSchema = new mongoose.Schema(
@@ -22,37 +23,38 @@ const RoomSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      minlength: 1,
+      maxlength: 100,
+      match: /^[A-Za-z]+$/,
     },
-    type:{
-      type:String,
-      enum:["general" , "group" , "private"],
-      default:"group",
+    type: {
+      type: String,
+      enum: ["general", "group", "private"],
+      default: "group",
+      required: true,
     },
-    members:{
-      type:[String],
-      default:[],
+    members: {
+      type: [String],
+      default: [],
     },
-    privateKey:{
-      type:String,
-      unique:true,
-      sparse:true,
+    privateKey: {
+      type: String,
+      unique: true,
+      sparse: true,
+      default: undefined,
     },
-    // isGroup: {
-    //   type: Boolean,
-    //   default: true,
-    // },
-    createdBy:{
-      type:String,
-      default:null,
+    createdBy: {
+      type: String,
+      default: null,
+      trim: true,
     },
     messages: {
-      type:[messageSchema],
-      default:[]
+      type: [messageSchema],
+      default: [],
     },
   },
-  { timestamps: true },
+  { timestamps: true }
 );
 
 const Room = mongoose.model("Room", RoomSchema);
-
 module.exports = { Room };

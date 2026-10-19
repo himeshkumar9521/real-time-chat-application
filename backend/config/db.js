@@ -1,11 +1,16 @@
 const mongoose = require("mongoose");
 
 module.exports = async function connectDB() {
+  const mongoUrl = process.env.MONGO_URL;
+  if (!mongoUrl) {
+    throw new Error("MONGO_URL is not configured in the environment");
+  }
+
   try {
-    const MONGO_URL = process.env.MONGO_URL;
-    await mongoose.connect(MONGO_URL, { dbName: "ChatApp" });
+    await mongoose.connect(mongoUrl, { dbName: "ChatApp" });
+    console.log("MongoDB connected");
   } catch (err) {
-    console.log(err);
-    process.exit(1);
+    console.error("MongoDB connection failed:", err);
+    throw err;
   }
 };

@@ -1,274 +1,222 @@
-const { connection } = require("mongoose");
+const jwt = require("jsonwebtoken");
+const { User } = require("./models/user");
 const { Room } = require("./models/room");
 
 const roomUsers = new Map();
 
-function getRoomUsers(roomId){
-  const users = roomUsers.get(String(roomId)) || new Map();
-
-  const uniqueUsers = [...new Set(users.values())];
-
-  return uniqueUsers;
-}
-
-function emitRoomUsers(io,roomId){
-  const id = String(roomId);
-
-    io.to(id).emit("room:users" , getRoomUsers(id));
-}
-
-function addSocketToRoom(roomId , socketId , username){
-  const id = String(roomId);
-
-  if(roomUsers.has(id)){
-    roomUsers.get(id , new Map());
-  }
-
-  roomUsers.get(id).set(socketId , username);
-}
-
-
-function removeSocketFromRoom(roomId , socketId){
-  const id = String(roomId);
-
-  const users = roomUsers.get(id);
-
-  if(!users){
-    return;
-  }
-
-  users.delete(socketId);
-
-  if(users.size === 0){
-    roomUsers.delete(id);
-  }
-}
-
-function isRoomMember(room , username){
-  if(room.type === "general"){
-    return true;
-  }
-
-  return room.members?.some(
-    (member) => {
-      member.toLowerCase() === username.toLowerCase();
+function readCookie(cookieHeader, name) {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() === name) {
+      return decodeURIComponent(part.slice(separator + 1).trim());
     }
-  );
+  }
+  return null;
 }
 
-function socketHandler(io){
-  io.on("connection" ,(socket) => {
-    let currUsername = null;
+function getRoomUsers(roomId) {
+  const users = roomUsers.get(String(roomId)) || new Map();
+  return [...new Set(users.values())];
+}
+
+function emitRoomUsers(io, roomId) {
+  const id = String(roomId);
+  io.to(id).emit("room:users", getRoomUsers(id));
+}
+
+function addSocketToRoom(roomId, socketId, username) {
+  const id = String(roomId);
+  if (!roomUsers.has(id)) roomUsers.set(id, new Map());
+  roomUsers.get(id).set(socketId, username);
+}
+
+function removeSocketFromRoom(roomId, socketId) {
+  const id = String(roomId);
+  const users = roomUsers.get(id);
+  if (!users) return;
+  users.delete(socketId);
+  if (users.size === 0) roomUsers.delete(id);
+}
+
+function isRoomMember(room, username) {
+  if (!room || !username) return false;
+  if (room.type === "general") return true;
+  return Array.isArray(room.members) &&
+    room.members.some((member) => member.toLowerCase() === username.toLowerCase());
+}
+
+function socketHandler(io) {
+  // Authenticate sockets; never trust a client-supplied username.
+  io.use(async (socket, next) => {
+    try {
+      const secret = process.env.JWT_SECRET;
+      if (!secret) return next(new Error("Server authentication is not configured"));
+
+      const authorization = socket.handshake.headers.authorization || "";
+      const bearer = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+      const token = socket.handshake.auth?.token ||
+        readCookie(socket.handshake.headers.cookie, "token") ||
+        bearer;
+
+      if (!token) return next(new Error("Authentication required"));
+
+      const payload = jwt.verify(token, secret);
+      const userId = payload.userid || payload.userId || payload.sub;
+      if (!userId) return next(new Error("Invalid authentication token"));
+
+      const user = await User.findById(userId);
+      if (!user || !user.emailVerified) {
+        return next(new Error("A verified account is required"));
+      }
+
+      socket.data.userId = String(user._id);
+      socket.data.username = user.username;
+      return next();
+    } catch (_err) {
+      return next(new Error("Invalid or expired authentication token"));
+    }
+  });
+
+  io.on("connection", (socket) => {
+    const currUsername = socket.data.username;
     let currRoomId = null;
 
-    // JOIN ROOM
-
-    socket.on("room:join" , async({roomId , Username}) => {
-      try{
-        const username = String(Username || "").trim();
-
-        if(!roomId || !username){
-          socket.emit("room:error" , {
-            message:"roomId and username are required"
-          });
-
+    socket.on("room:join", async (payload = {}) => {
+      try {
+        const roomId = String(payload.roomId || "").trim();
+        if (!roomId) {
+          socket.emit("room:error", { message: "roomId is required" });
           return;
         }
 
         const room = await Room.findById(roomId).lean();
-
-        if(!room){
-          socket.emit("room:erorr" , {
-            message:"Room not found"
-          });
-        }
-
-        if(!isRoomMember(room , username)){
-          socket.emit("room:error" , {
-            message:"you are not a member of this room"
-          });
-
+        if (!room) {
+          socket.emit("room:error", { message: "Room not found" });
           return;
         }
 
-        if(currRoomId){
-          socket.leave(currRoomId);
-
-          removeSocketFromRoom(currRoomId , socket.id);
-
-          emitRoomUsers(io , currRoomId);
+        if (!isRoomMember(room, currUsername)) {
+          socket.emit("room:error", { message: "You are not a member of this room" });
+          return;
         }
-        currRoomId = String(roomId);
-        currUsername = username;
 
+        if (currRoomId) {
+          const oldRoomId = currRoomId;
+          socket.leave(oldRoomId);
+          removeSocketFromRoom(oldRoomId, socket.id);
+          emitRoomUsers(io, oldRoomId);
+        }
+
+        currRoomId = String(room._id);
         socket.join(currRoomId);
+        addSocketToRoom(currRoomId, socket.id, currUsername);
+        emitRoomUsers(io, currRoomId);
 
-        addSocketToRoom(
-          currRoomId,
-          socket.id,
-          currusername
-        );
-
-        emitRoomUsers(io , currRoomId);
-
-        socket.emit("room:history" , (room.messages || []).map((m) => ({
-          id:m.id,
-          roomId:room._id,
-          senderUsername : m.senderUsername,
-          content:m.content,
-          createdAt: m.createdAt
+        socket.emit("room:history", (room.messages || []).map((message) => ({
+          id: String(message._id),
+          roomId: String(room._id),
+          senderUsername: message.senderUsername,
+          content: message.content,
+          createdAt: message.createdAt,
         })));
 
-
-        socket.emit("room::info" , {
-          id:room.id,
-          name:room.name,
-          type:room.type,
-          members:room.members || [],
-          createdAt : room.createdAt || null
-        });
-
-      }catch(err){
-        console.error("room:join error:" , err);
-
-        socket.emit("room:error",{
-          message:"Failed to join room"
-        });
+        const info = {
+          id: String(room._id),
+          name: room.name,
+          type: room.type,
+          members: room.members || [],
+          createdAt: room.createdAt || null,
+        };
+        socket.emit("room:info", info);
+        // Keep the former event name for older clients.
+        socket.emit("room::info", info);
+      } catch (err) {
+        console.error("room:join error:", err);
+        socket.emit("room:error", { message: "Failed to join room" });
       }
     });
 
-    //send message
+    socket.on("message:send", async (payload = {}) => {
+      try {
+        const text = String(payload.content ?? "").trim();
+        const targetRoomId = String(payload.roomId || "");
 
-    socket.on("message:send" , async({roomId , content}) =>{
-      try{
-        const text = String(content || "").trim();
-        const targetRoomId = String(roomId || "");
-
-        if(!text){
-          socket.emit("message:error",{
-            message:"message cannot be empty"
-          });
-
+        if (!text) {
+          socket.emit("message:error", { message: "Message cannot be empty" });
           return;
         }
-
-        if(!currUsername){
-          socket.emit("message:error" , {
-            message:"you are not authenticated"
-          });
-
+        if (text.length > 5000) {
+          socket.emit("message:error", { message: "Message cannot exceed 5000 characters" });
           return;
         }
-
-
-        if(!currRoomId || currRoomId !== targetRoomId){
-          socket.emit("message:error" , {
-            message:"you are not connected to the room"
-          });
-
+        if (!currRoomId || currRoomId !== targetRoomId) {
+          socket.emit("message:error", { message: "You are not connected to this room" });
           return;
         }
 
         const room = await Room.findById(targetRoomId);
-
-        if(!room){
-          socket.emit("message:error" , {
-            message:"Room not found"
-          });
-
+        if (!room) {
+          socket.emit("message:error", { message: "Room not found" });
+          return;
+        }
+        if (!isRoomMember(room, currUsername)) {
+          socket.emit("message:error", { message: "You are not a member of this room" });
           return;
         }
 
-        if(!isRoomMember(targetRoomId , currUsername)){
-          socket.emit("message:error" , {
-            message:"you are not a member of this room"
-          });
-
-          return;
-        }
-
-
-        room.messages.push({
-          senderUsername:currUsername,
-          content:text,
-        });
-
-
+        room.messages.push({ senderUsername: currUsername, content: text });
         await room.save();
+        const message = room.messages[room.messages.length - 1];
 
-        const msg = room.messages.at(-1);
-
-        io.to(targetRoomId).emit("message:new" , {
-          id:msg._id,
-          roomId:room._id,
-          senderUsername:msg.senderUsername,
-          content:msg.content,
-          createdAt:msg.createdAt
+        io.to(targetRoomId).emit("message:new", {
+          id: String(message._id),
+          roomId: String(room._id),
+          senderUsername: message.senderUsername,
+          content: message.content,
+          createdAt: message.createdAt,
         });
+        console.log(`${currUsername} sent a message to ${room.name}`);
+      } catch (err) {
+        console.error("message:send error:", err);
+        socket.emit("message:error", { message: "Failed to send message" });
+      }
+    });
 
-        console.log(`${username} send message to ${room.name}`);
-  
-      }catch(err){
-        console.error("message:send error:" , err);
-
-        socket.emit("message:error" , {
-          message:"Failed to send message"
+    socket.on("typing:start", () => {
+      if (currRoomId) {
+        socket.to(currRoomId).emit("typing:update", {
+          username: currUsername,
+          isTyping: true,
         });
       }
     });
 
-
-    socket.on("typing:start" , () =>{
-      if(!currRoomId || !currUsername){
-        return;
+    socket.on("typing:stop", () => {
+      if (currRoomId) {
+        socket.to(currRoomId).emit("typing:update", {
+          username: currUsername,
+          isTyping: false,
+        });
       }
-
-      socket.to(currRoomId).emit("typing:update",{
-        username:currUsername,
-        isTyping:true,
-      });
     });
 
-    socket.on("typing:stop" , () => {
-      if(!currRoomId || !currUsername){
-        return;
-      }
-
-      socket.to(currRoomId).emit("typing:update",{
-        username:currUsername,
-        isTyping:false
-      });
-    });
-
-    socket.on("room:leave" , () =>{
-      if(!currRoomId){
-        return;
-      }
-
+    socket.on("room:leave", () => {
+      if (!currRoomId) return;
       const oldRoomId = currRoomId;
-
       socket.leave(oldRoomId);
-
-      removeSocketFromRoom(oldRoomId,socket.id);
-
-      emitRoomUsers(io , oldRoomId);
-
+      removeSocketFromRoom(oldRoomId, socket.id);
+      emitRoomUsers(io, oldRoomId);
       currRoomId = null;
-
     });
 
-
-    //Disconnect
-
-    socket.on("disconnect" , () => {
-      if(currRoomId){
+    socket.on("disconnect", () => {
+      if (currRoomId) {
         const oldRoomId = currRoomId;
-
-        removeSocketFromRoom(oldRoomId , socket.id);
-        emitRoomUsers(io,oldRoomId);
-
+        removeSocketFromRoom(oldRoomId, socket.id);
+        emitRoomUsers(io, oldRoomId);
       }
-
       console.log(`socket disconnected ${socket.id}`);
     });
   });

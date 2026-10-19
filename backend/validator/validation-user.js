@@ -1,49 +1,46 @@
-const {body} = require("express-validator");
+const { body } = require("express-validator");
 
 const registerValidater = [
-    body("username")
+  body("username")
     .trim()
     .notEmpty()
-    .withMessage("username is required")
-    .isLength({min:2,max:30})
-    .withMessage("username length must between 2 to 30")
+    .withMessage("Username is required")
+    .isLength({ min: 2, max: 30 })
+    .withMessage("Username must be between 2 and 30 characters")
     .matches(/^[A-Za-z]{2,30}$/)
-    .withMessage(
-      "Username must contain only English letters (A-Z, a-z)"
-    ),
+    .withMessage("Username must contain only English letters (A-Z, a-z)"),
 
-    body("email")
+  body("email")
     .trim()
     .notEmpty()
-    .withMessage("email is required")
+    .withMessage("Email is required")
     .isEmail()
-    .withMessage("please provide a valid email")
-    .normalizeEmail(),
+    .withMessage("Please provide a valid email"),
+  // Intentionally do not normalize/lowercase email: capitalization is preserved.
 
-    body("password")
+  body("password")
     .notEmpty()
-    .withMessage("password is required")
-    .isLength({min:8})
-    .withMessage("password length should minimum 8")
+    .withMessage("Password is required")
+    .isLength({ min: 8 })
+    .withMessage("Password must be at least 8 characters long")
     .matches(/[A-Z]/)
-    .withMessage("password must constain atleast one uppercase letter")
+    .withMessage("Password must contain at least one uppercase letter")
     .matches(/[a-z]/)
-    .withMessage("password must constain atleast one lowercase letter")
+    .withMessage("Password must contain at least one lowercase letter")
     .matches(/[0-9]/)
-    .withMessage("password must constain atleast one number")
+    .withMessage("Password must contain at least one number")
     .matches(/[!@#$%^&*]/)
-    .withMessage("password must constain atleast one spacial character"),
+    .withMessage("Password must contain at least one special character"),
 
-    body("confirmPassword")
+  body("confirmPassword")
     .notEmpty()
-    .withMessage("confirm password is required")
-    .custom((value,{req})=>{
-        if(value !== req.body.password){
-            throw new Error("passwords not match")
-        }
-
-        return true
+    .withMessage("Confirm password is required")
+    .custom((value, { req }) => {
+      if (value !== req.body.password) {
+        throw new Error("Passwords do not match");
+      }
+      return true;
     }),
 ];
 
-module.exports = {registerValidater}
+module.exports = { registerValidater };

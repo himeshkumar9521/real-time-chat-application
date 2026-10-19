@@ -52,7 +52,7 @@ async function findUserByUsername(username) {
   if (!cleaned) return null;
 
   return User.findOne({
-    username: usernameRegex(cleaned),
+    usernameKey: cleaned.toLowerCase(),
   });
 }
 
@@ -67,26 +67,6 @@ async function findUserByEmail(email) {
   return User.findOne({
     email: cleaned,
   });
-}
-
-function hasUsername(values, username) {
-  const wanted = cleanUsername(username).toLowerCase();
-
-  return Array.isArray(values) &&
-    values.some(
-      (value) =>
-        cleanUsername(value).toLowerCase() === wanted
-    );
-}
-
-function addUsername(values, username) {
-  const result = Array.isArray(values) ? [...values] : [];
-
-  if (username && !hasUsername(result, username)) {
-    result.push(username);
-  }
-
-  return result;
 }
 
 function removeUsername(values, username) {
@@ -174,47 +154,10 @@ async function getAuthenticatedUser(req) {
   return User.findById(req.authUserId);
 }
 
-// Update username references in the existing string-based
-// relationship arrays and room memberships.
-async function updateUsernameReferences(
-  oldUsername,
-  newUsername
-) {
+// Update room memberships when a username changes.
+async function updateUsernameReferences(oldUsername, newUsername) {
   const pattern = usernameRegex(oldUsername);
-
-  const relatedUsers = await User.find({
-    $or: [
-      { followers: pattern },
-      { following: pattern },
-      { followRequest: pattern },
-    ],
-  });
-
-  for (const relatedUser of relatedUsers) {
-    relatedUser.followers = replaceUsername(
-      relatedUser.followers,
-      oldUsername,
-      newUsername
-    );
-
-    relatedUser.following = replaceUsername(
-      relatedUser.following,
-      oldUsername,
-      newUsername
-    );
-
-    relatedUser.followRequest = replaceUsername(
-      relatedUser.followRequest,
-      oldUsername,
-      newUsername
-    );
-
-    await relatedUser.save();
-  }
-
-  const affectedRooms = await Room.find({
-    members: pattern,
-  });
+  const affectedRooms = await Room.find({ members: pattern });
 
   for (const room of affectedRooms) {
     room.members = replaceUsername(
@@ -225,10 +168,7 @@ async function updateUsernameReferences(
 
     // Keep private room identifiers consistent with the
     // lowercase canonical key used by the room routes.
-    if (
-      room.type === "private" &&
-      room.members.length === 2
-    ) {
+    if (room.type === "private" && room.members.length === 2) {
       room.privateKey = room.members
         .map((member) => member.toLowerCase())
         .sort()
@@ -238,7 +178,7 @@ async function updateUsernameReferences(
         a.toLowerCase().localeCompare(b.toLowerCase())
       );
 
-      room.name = `${members[0]} & ${members[1]}`;
+      room.name = `${members[0]}${members[1]}`;
     }
 
     await room.save();
@@ -337,9 +277,6 @@ router.post(
         emailVerified: false,
         emailVerificationToken: hashedToken,
         emailVerifcationexpire: expire,
-        followers: [],
-        followRequest: [],
-        following: [],
         rooms: [],
       });
 
@@ -569,34 +506,6 @@ router.post("/deleteUser", requireAuth, async (req, res) => {
 
     const pattern = usernameRegex(user.username);
 
-    const relatedUsers = await User.find({
-      _id: { $ne: user._id },
-      $or: [
-        { followers: pattern },
-        { following: pattern },
-        { followRequest: pattern },
-      ],
-    });
-
-    for (const relatedUser of relatedUsers) {
-      relatedUser.followers = removeUsername(
-        relatedUser.followers,
-        user.username
-      );
-
-      relatedUser.following = removeUsername(
-        relatedUser.following,
-        user.username
-      );
-
-      relatedUser.followRequest = removeUsername(
-        relatedUser.followRequest,
-        user.username
-      );
-
-      await relatedUser.save();
-    }
-
     // Remove the user from group memberships.
     const groupRooms = await Room.find({
       type: "group",
@@ -703,368 +612,6 @@ router.post(
       return res.status(500).json({
         success: false,
         message: "Failed to change username",
-      });
-    }
-  }
-);
-
-// ------------------------------------------------------
-// SEND FOLLOW REQUEST
-// POST /api/user/follow-request
-// ------------------------------------------------------
-
-router.post(
-  "/follow-request",
-  requireAuth,
-  async (req, res) => {
-    try {
-      const targetUsername = cleanUsername(
-        req.body?.toFollow
-      );
-
-      if (!targetUsername) {
-        return res.status(400).json({
-          success: false,
-          message: "Username to follow is required",
-        });
-      }
-
-      const requester = await getAuthenticatedUser(req);
-      const target = await findUserByUsername(targetUsername);
-
-      if (!requester) {
-        return res.status(401).json({
-          success: false,
-          message: "Account not found",
-        });
-      }
-
-      if (!target) {
-        return res.status(404).json({
-          success: false,
-          message: "User not found",
-        });
-      }
-
-      if (requester._id.equals(target._id)) {
-        return res.status(400).json({
-          success: false,
-          message: "You cannot follow yourself",
-        });
-      }
-
-      if (hasUsername(requester.following, target.username)) {
-        return res.status(409).json({
-          success: false,
-          message: "You are already following this user",
-        });
-      }
-
-      if (hasUsername(target.followRequest, requester.username)) {
-        return res.status(409).json({
-          success: false,
-          message: "Follow request already sent",
-        });
-      }
-
-      target.followRequest = addUsername(
-        target.followRequest,
-        requester.username
-      );
-
-      await target.save();
-
-      return res.status(200).json({
-        success: true,
-        message: "Follow request sent",
-      });
-    } catch (err) {
-      console.error("Follow request error:", err);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to send follow request",
-      });
-    }
-  }
-);
-
-// ------------------------------------------------------
-// ACCEPT FOLLOW REQUEST
-// POST /api/user/follow-request-accept
-// ------------------------------------------------------
-
-router.post(
-  "/follow-request-accept",
-  requireAuth,
-  async (req, res) => {
-    try {
-      const requesterUsername = cleanUsername(
-        req.body?.ByFollow ?? req.body?.person
-      );
-
-      if (!requesterUsername) {
-        return res.status(400).json({
-          success: false,
-          message: "Requesting username is required",
-        });
-      }
-
-      const recipient = await getAuthenticatedUser(req);
-      const requester = await findUserByUsername(
-        requesterUsername
-      );
-
-      if (!recipient) {
-        return res.status(401).json({
-          success: false,
-          message: "Account not found",
-        });
-      }
-
-      if (!requester) {
-        return res.status(404).json({
-          success: false,
-          message: "Requesting user not found",
-        });
-      }
-
-      if (!hasUsername(
-        recipient.followRequest,
-        requester.username
-      )) {
-        return res.status(404).json({
-          success: false,
-          message: "Follow request not found",
-        });
-      }
-
-      recipient.followRequest = removeUsername(
-        recipient.followRequest,
-        requester.username
-      );
-
-      recipient.followers = addUsername(
-        recipient.followers,
-        requester.username
-      );
-
-      requester.following = addUsername(
-        requester.following,
-        recipient.username
-      );
-
-      await Promise.all([
-        recipient.save(),
-        requester.save(),
-      ]);
-
-      return res.status(200).json({
-        success: true,
-        message: "Follow request accepted",
-      });
-    } catch (err) {
-      console.error("Accept follow request error:", err);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to accept follow request",
-      });
-    }
-  }
-);
-
-// ------------------------------------------------------
-// REJECT FOLLOW REQUEST
-// POST /api/user/follow-request-reject
-// ------------------------------------------------------
-
-router.post(
-  "/follow-request-reject",
-  requireAuth,
-  async (req, res) => {
-    try {
-      const requesterUsername = cleanUsername(
-        req.body?.person ?? req.body?.ByFollow
-      );
-
-      if (!requesterUsername) {
-        return res.status(400).json({
-          success: false,
-          message: "Requesting username is required",
-        });
-      }
-
-      const recipient = await getAuthenticatedUser(req);
-
-      if (!recipient) {
-        return res.status(401).json({
-          success: false,
-          message: "Account not found",
-        });
-      }
-
-      if (!hasUsername(
-        recipient.followRequest,
-        requesterUsername
-      )) {
-        return res.status(404).json({
-          success: false,
-          message: "Follow request not found",
-        });
-      }
-
-      recipient.followRequest = removeUsername(
-        recipient.followRequest,
-        requesterUsername
-      );
-
-      await recipient.save();
-
-      return res.status(200).json({
-        success: true,
-        message: "Follow request rejected",
-      });
-    } catch (err) {
-      console.error("Reject follow request error:", err);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to reject follow request",
-      });
-    }
-  }
-);
-
-// ------------------------------------------------------
-// UNFOLLOW
-// POST /api/user/unfollow
-// ------------------------------------------------------
-
-router.post("/unfollow", requireAuth, async (req, res) => {
-  try {
-    const targetUsername = cleanUsername(
-      req.body?.person ?? req.body?.toUnfollow
-    );
-
-    if (!targetUsername) {
-      return res.status(400).json({
-        success: false,
-        message: "Username to unfollow is required",
-      });
-    }
-
-    const requester = await getAuthenticatedUser(req);
-    const target = await findUserByUsername(targetUsername);
-
-    if (!requester) {
-      return res.status(401).json({
-        success: false,
-        message: "Account not found",
-      });
-    }
-
-    if (!target) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    requester.following = removeUsername(
-      requester.following,
-      target.username
-    );
-
-    target.followers = removeUsername(
-      target.followers,
-      requester.username
-    );
-
-    await Promise.all([
-      requester.save(),
-      target.save(),
-    ]);
-
-    return res.status(200).json({
-      success: true,
-      message: "Unfollowed successfully",
-    });
-  } catch (err) {
-    console.error("Unfollow error:", err);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to unfollow user",
-    });
-  }
-});
-
-// ------------------------------------------------------
-// REMOVE FOLLOWER
-// POST /api/user/unfollowing
-// ------------------------------------------------------
-
-router.post(
-  "/unfollowing",
-  requireAuth,
-  async (req, res) => {
-    try {
-      const followerUsername = cleanUsername(
-        req.body?.person ?? req.body?.follower
-      );
-
-      if (!followerUsername) {
-        return res.status(400).json({
-          success: false,
-          message: "Follower username is required",
-        });
-      }
-
-      const recipient = await getAuthenticatedUser(req);
-      const follower = await findUserByUsername(
-        followerUsername
-      );
-
-      if (!recipient) {
-        return res.status(401).json({
-          success: false,
-          message: "Account not found",
-        });
-      }
-
-      if (!follower) {
-        return res.status(404).json({
-          success: false,
-          message: "Follower not found",
-        });
-      }
-
-      recipient.followers = removeUsername(
-        recipient.followers,
-        follower.username
-      );
-
-      follower.following = removeUsername(
-        follower.following,
-        recipient.username
-      );
-
-      await Promise.all([
-        recipient.save(),
-        follower.save(),
-      ]);
-
-      return res.status(200).json({
-        success: true,
-        message: "Follower removed successfully",
-      });
-    } catch (err) {
-      console.error("Remove follower error:", err);
-
-      return res.status(500).json({
-        success: false,
-        message: "Failed to remove follower",
       });
     }
   }
