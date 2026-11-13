@@ -94,22 +94,34 @@ router.post("/private", requireAuth, async (req, res) => {
       suppliedUser1 &&
       suppliedUser1.toLowerCase() !== currentUser.username.toLowerCase()
     ) {
-      return res.status(403).json({ message: "You cannot create a private room as another user" });
+      return res
+        .status(403)
+        .json({ message: "You cannot create a private room as another user" });
     }
     if (!USERNAME_PATTERN.test(targetUsername)) {
-      return res.status(400).json({ message: "A valid second username is required" });
+      return res
+        .status(400)
+        .json({ message: "A valid second username is required" });
     }
 
-    const targetUser = await User.findOne({ usernameKey: targetUsername.toLowerCase() });
-    if (!targetUser) return res.status(404).json({ message: "Second user not found" });
+    const targetUser = await User.findOne({
+      usernameKey: targetUsername.toLowerCase(),
+    });
+    if (!targetUser)
+      return res.status(404).json({ message: "Second user not found" });
     if (currentUser._id.equals(targetUser._id)) {
-      return res.status(400).json({ message: "You cannot create a private room with yourself" });
+      return res
+        .status(400)
+        .json({ message: "You cannot create a private room with yourself" });
     }
 
     const members = [currentUser.username, targetUser.username].sort((a, b) =>
-      a.toLowerCase().localeCompare(b.toLowerCase())
+      a.toLowerCase().localeCompare(b.toLowerCase()),
     );
-    const privateKey = members.map((name) => name.toLowerCase()).sort().join(":");
+    const privateKey = members
+      .map((name) => name.toLowerCase())
+      .sort()
+      .join(":");
 
     let room = await Room.findOne({ privateKey });
     if (room) return res.status(200).json({ room: roomSummary(room) });
@@ -146,7 +158,8 @@ router.post("/group", requireAuth, async (req, res) => {
 
     if (!ROOM_NAME_PATTERN.test(name)) {
       return res.status(400).json({
-        message: "Room name must contain only English letters (A-Z, a-z), with no spaces or symbols",
+        message:
+          "Room name must contain only English letters (A-Z, a-z), with no spaces or symbols",
       });
     }
 
@@ -169,12 +182,15 @@ router.post("/group", requireAuth, async (req, res) => {
     for (const username of requestedMembers) {
       if (!USERNAME_PATTERN.test(username)) {
         return res.status(400).json({
-          message: "Every member username must contain only English letters and be 2-30 characters long",
+          message:
+            "Every member username must contain only English letters and be 2-30 characters long",
         });
       }
     }
 
-    const memberKeys = new Set(requestedMembers.map((username) => username.toLowerCase()));
+    const memberKeys = new Set(
+      requestedMembers.map((username) => username.toLowerCase()),
+    );
     memberKeys.add(creator.username.toLowerCase());
 
     const users = await User.find({ usernameKey: { $in: [...memberKeys] } })
@@ -182,13 +198,16 @@ router.post("/group", requireAuth, async (req, res) => {
       .lean();
 
     if (users.length !== memberKeys.size) {
-      return res.status(404).json({ message: "One or more group members do not exist" });
+      return res
+        .status(404)
+        .json({ message: "One or more group members do not exist" });
     }
 
     const members = users.map((user) => user.username);
     if (members.length < MIN_GROUP_MEMBERS) {
       return res.status(400).json({
-        message: "A group room must contain at least 3 members. Use a private conversation for two people.",
+        message:
+          "A group room must contain at least 3 members. Use a private conversation for two people.",
       });
     }
 
@@ -209,7 +228,6 @@ router.post("/group", requireAuth, async (req, res) => {
   }
 });
 
-
 // DELETE /api/rooms/:roomId
 // Private chats are deleted for both members. In a group, the requester leaves;
 // if fewer than 3 members would remain, the whole group is deleted.
@@ -221,14 +239,18 @@ router.delete("/:roomId", requireAuth, async (req, res) => {
 
     const username = req.authUser.username;
     const isMember = (room.members || []).some(
-      (member) => String(member).toLowerCase() === username.toLowerCase()
+      (member) => String(member).toLowerCase() === username.toLowerCase(),
     );
 
     if (room.type === "general") {
-      return res.status(403).json({ message: "The General room cannot be deleted" });
+      return res
+        .status(403)
+        .json({ message: "The General room cannot be deleted" });
     }
     if (!isMember) {
-      return res.status(403).json({ message: "You are not a member of this room" });
+      return res
+        .status(403)
+        .json({ message: "You are not a member of this room" });
     }
 
     if (room.type === "private") {

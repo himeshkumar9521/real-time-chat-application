@@ -8,7 +8,11 @@ import { FiMessageCircle } from "react-icons/fi";
 export default function App() {
   const [session, setSession] = useState(() => {
     const raw = sessionStorage.getItem("chat_user");
-    try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+    try {
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
   });
   const [token, setToken] = useState(getToken);
   const [socket, setSocket] = useState(null);
@@ -29,10 +33,17 @@ export default function App() {
   }, []);
 
   const signOut = useCallback(async () => {
-    try { await api("/api/user/logout", { method: "POST" }); } catch { /* clear local session even if offline */ }
+    try {
+      await api("/api/user/logout", { method: "POST" });
+    } catch {
+      /* clear local session even if offline */
+    }
     sessionStorage.removeItem("chat_token");
     sessionStorage.removeItem("chat_user");
-    setToken(""); setSession(null); setRooms([]); setActiveRoom(null);
+    setToken("");
+    setSession(null);
+    setRooms([]);
+    setActiveRoom(null);
     setOnlineUsers([]);
     if (socket) socket.disconnect();
     setSocket(null);
@@ -42,7 +53,9 @@ export default function App() {
     let cancelled = false;
     if (!session || !token) {
       setAuthReady(true);
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+      };
     }
     setAuthReady(false);
     api("/api/user/me")
@@ -61,7 +74,9 @@ export default function App() {
         setSession(null);
         setAuthReady(true);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
   useEffect(() => {
@@ -74,37 +89,56 @@ export default function App() {
         const list = await api("/api/rooms");
         if (!cancelled) {
           setRooms(Array.isArray(list) ? list : []);
-          setActiveRoom((current) => current ? (list.find((r) => r._id === current._id) || null) : null);
+          setActiveRoom((current) =>
+            current ? list.find((r) => r._id === current._id) || null : null,
+          );
         }
       } catch (error) {
         if (!cancelled) setNotice(error.message);
-      } finally { if (!cancelled) setBusy(false); }
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
     };
     loadRooms();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [authReady, session, token]);
 
   useEffect(() => {
     if (!authReady || !session || !token) return;
     const client = io(socketUrl(), {
-      auth: { token }, transports: ["websocket", "polling"],
-      reconnectionAttempts: 8, reconnectionDelay: 1000,
+      auth: { token },
+      transports: ["websocket", "polling"],
+      reconnectionAttempts: 8,
+      reconnectionDelay: 1000,
     });
-    client.on("connect_error", (error) => setNotice(error.message || "Could not connect to chat server"));
-    client.on("room:error", (error) => setNotice(error?.message || "Room error"));
-    client.on("message:error", (error) => setNotice(error?.message || "Message error"));
+    client.on("connect_error", (error) =>
+      setNotice(error.message || "Could not connect to chat server"),
+    );
+    client.on("room:error", (error) =>
+      setNotice(error?.message || "Room error"),
+    );
+    client.on("message:error", (error) =>
+      setNotice(error?.message || "Message error"),
+    );
     client.on("connect", () => setNotice(""));
     setSocket(client);
-    return () => { client.disconnect(); setSocket(null); };
+    return () => {
+      client.disconnect();
+      setSocket(null);
+    };
   }, [authReady, session, token]);
 
   const refreshRooms = useCallback(async () => {
     const list = await api("/api/rooms");
     const nextRooms = Array.isArray(list) ? list : [];
     setRooms(nextRooms);
-    setActiveRoom((current) => current
-      ? (nextRooms.find((room) => String(room._id) === String(current._id)) || null)
-      : null
+    setActiveRoom((current) =>
+      current
+        ? nextRooms.find((room) => String(room._id) === String(current._id)) ||
+          null
+        : null,
     );
     return nextRooms;
   }, []);
@@ -127,7 +161,8 @@ export default function App() {
 
   const createGroup = async (name, members) => {
     const room = await api("/api/rooms/group", {
-      method: "POST", body: JSON.stringify({ name, members }),
+      method: "POST",
+      body: JSON.stringify({ name, members }),
     });
     await refreshRooms();
     setActiveRoom(room);
@@ -136,7 +171,8 @@ export default function App() {
 
   const createPrivate = async (username) => {
     const result = await api("/api/rooms/private", {
-      method: "POST", body: JSON.stringify({ user2: username }),
+      method: "POST",
+      body: JSON.stringify({ user2: username }),
     });
     const room = result.room || result;
     await refreshRooms();
@@ -149,13 +185,19 @@ export default function App() {
       method: "DELETE",
     });
     await refreshRooms();
-    setNotice(result.message || (room.type === "private" ? "Conversation deleted" : "You left the group"));
+    setNotice(
+      result.message ||
+        (room.type === "private"
+          ? "Conversation deleted"
+          : "You left the group"),
+    );
     return result;
   };
 
   const changeUsername = async (newUsername) => {
     const result = await api("/api/user/change-username", {
-      method: "POST", body: JSON.stringify({ newUsername }),
+      method: "POST",
+      body: JSON.stringify({ newUsername }),
     });
     const updated = { ...session, username: result.username || newUsername };
     sessionStorage.setItem("chat_user", JSON.stringify(updated));
@@ -169,8 +211,12 @@ export default function App() {
 
   const deleteAccount = async () => {
     await api("/api/user/deleteUser", { method: "POST" });
-    sessionStorage.removeItem("chat_token"); sessionStorage.removeItem("chat_user");
-    setToken(""); setSession(null); setRooms([]); setActiveRoom(null);
+    sessionStorage.removeItem("chat_token");
+    sessionStorage.removeItem("chat_user");
+    setToken("");
+    setSession(null);
+    setRooms([]);
+    setActiveRoom(null);
     if (socket) socket.disconnect();
   };
 
@@ -183,13 +229,27 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}
+      {notice && (
+        <div className="toast" role="status">
+          <span>{notice}</span>
+          <button onClick={() => setNotice("")}>×</button>
+        </div>
+      )}
       <ChatWorkspace
-        session={session} rooms={rooms} activeRoom={activeRoom} setActiveRoom={setActiveRoom}
-        socket={socket} onlineUsers={onlineUsers} setOnlineUsers={setOnlineUsers}
-        onCreateGroup={createGroup} onCreatePrivate={createPrivate}
-        onSignOut={signOut} onChangeUsername={changeUsername} onDeleteAccount={deleteAccount}
-        onRemoveRoom={removeRoom} busy={busy}
+        session={session}
+        rooms={rooms}
+        activeRoom={activeRoom}
+        setActiveRoom={setActiveRoom}
+        socket={socket}
+        onlineUsers={onlineUsers}
+        setOnlineUsers={setOnlineUsers}
+        onCreateGroup={createGroup}
+        onCreatePrivate={createPrivate}
+        onSignOut={signOut}
+        onChangeUsername={changeUsername}
+        onDeleteAccount={deleteAccount}
+        onRemoveRoom={removeRoom}
+        busy={busy}
       />
     </div>
   );

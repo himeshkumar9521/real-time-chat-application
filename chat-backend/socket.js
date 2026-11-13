@@ -63,8 +63,12 @@ function purgeRoom(io, roomId) {
 function isRoomMember(room, username) {
   if (!room || !username) return false;
   if (room.type === "general") return true;
-  return Array.isArray(room.members) &&
-    room.members.some((member) => member.toLowerCase() === username.toLowerCase());
+  return (
+    Array.isArray(room.members) &&
+    room.members.some(
+      (member) => member.toLowerCase() === username.toLowerCase(),
+    )
+  );
 }
 
 function socketHandler(io) {
@@ -72,11 +76,15 @@ function socketHandler(io) {
   io.use(async (socket, next) => {
     try {
       const secret = process.env.JWT_SECRET;
-      if (!secret) return next(new Error("Server authentication is not configured"));
+      if (!secret)
+        return next(new Error("Server authentication is not configured"));
 
       const authorization = socket.handshake.headers.authorization || "";
-      const bearer = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-      const token = socket.handshake.auth?.token ||
+      const bearer = authorization.startsWith("Bearer ")
+        ? authorization.slice(7).trim()
+        : "";
+      const token =
+        socket.handshake.auth?.token ||
         bearer ||
         readCookie(socket.handshake.headers.cookie, "token");
 
@@ -106,7 +114,9 @@ function socketHandler(io) {
     // Always act as the account's CURRENT username, so a rename (or a deleted
     // account) is never mistaken for someone else.
     async function liveUsername() {
-      const user = await User.findById(socket.data.userId).select("username emailVerified");
+      const user = await User.findById(socket.data.userId).select(
+        "username emailVerified",
+      );
       if (!user || !user.emailVerified) {
         socket.disconnect(true);
         return null;
@@ -136,7 +146,9 @@ function socketHandler(io) {
         }
 
         if (!isRoomMember(room, currUsername)) {
-          socket.emit("room:error", { message: "You are not a member of this room" });
+          socket.emit("room:error", {
+            message: "You are not a member of this room",
+          });
           return;
         }
 
@@ -152,13 +164,16 @@ function socketHandler(io) {
         addSocketToRoom(currRoomId, socket.id, currUsername);
         emitRoomUsers(io, currRoomId);
 
-        socket.emit("room:history", (room.messages || []).map((message) => ({
-          id: String(message._id),
-          roomId: String(room._id),
-          senderUsername: message.senderUsername,
-          content: message.content,
-          createdAt: message.createdAt,
-        })));
+        socket.emit(
+          "room:history",
+          (room.messages || []).map((message) => ({
+            id: String(message._id),
+            roomId: String(room._id),
+            senderUsername: message.senderUsername,
+            content: message.content,
+            createdAt: message.createdAt,
+          })),
+        );
 
         const info = {
           id: String(room._id),
@@ -186,11 +201,15 @@ function socketHandler(io) {
           return;
         }
         if (text.length > 5000) {
-          socket.emit("message:error", { message: "Message cannot exceed 5000 characters" });
+          socket.emit("message:error", {
+            message: "Message cannot exceed 5000 characters",
+          });
           return;
         }
         if (!currRoomId || currRoomId !== targetRoomId) {
-          socket.emit("message:error", { message: "You are not connected to this room" });
+          socket.emit("message:error", {
+            message: "You are not connected to this room",
+          });
           return;
         }
 
@@ -202,7 +221,9 @@ function socketHandler(io) {
           return;
         }
         if (!isRoomMember(room, currUsername)) {
-          socket.emit("message:error", { message: "You are not a member of this room" });
+          socket.emit("message:error", {
+            message: "You are not a member of this room",
+          });
           return;
         }
 

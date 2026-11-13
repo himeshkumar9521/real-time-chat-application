@@ -40,10 +40,7 @@ function escapeRegex(value) {
 }
 
 function usernameRegex(username) {
-  return new RegExp(
-    `^${escapeRegex(username)}$`,
-    "i"
-  );
+  return new RegExp(`^${escapeRegex(username)}$`, "i");
 }
 
 // Case-insensitive username lookup.
@@ -74,8 +71,7 @@ function removeUsername(values, username) {
   const wanted = cleanUsername(username).toLowerCase();
 
   return (Array.isArray(values) ? values : []).filter(
-    (value) =>
-      cleanUsername(value).toLowerCase() !== wanted
+    (value) => cleanUsername(value).toLowerCase() !== wanted,
   );
 }
 
@@ -87,9 +83,7 @@ function replaceUsername(values, oldUsername, newUsername) {
 
   for (const value of Array.isArray(values) ? values : []) {
     const nextValue =
-      cleanUsername(value).toLowerCase() === oldName
-        ? newUsername
-        : value;
+      cleanUsername(value).toLowerCase() === oldName ? newUsername : value;
 
     const key = cleanUsername(nextValue).toLowerCase();
 
@@ -130,10 +124,7 @@ function requireAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, secret);
 
-    const userId =
-      payload.userid ||
-      payload.userId ||
-      payload.sub;
+    const userId = payload.userid || payload.userId || payload.sub;
 
     if (!userId) {
       return res.status(401).json({
@@ -175,14 +166,13 @@ async function updateUsernameReferences(oldUsername, newUsername, req) {
     let changed = false;
     let membershipChanged = false;
 
-    if (Array.isArray(room.members) && room.members.some(
-      (member) => cleanUsername(member).toLowerCase() === oldKey
-    )) {
-      room.members = replaceUsername(
-        room.members,
-        oldUsername,
-        newUsername
-      );
+    if (
+      Array.isArray(room.members) &&
+      room.members.some(
+        (member) => cleanUsername(member).toLowerCase() === oldKey,
+      )
+    ) {
+      room.members = replaceUsername(room.members, oldUsername, newUsername);
       changed = true;
       membershipChanged = true;
     }
@@ -203,7 +193,11 @@ async function updateUsernameReferences(oldUsername, newUsername, req) {
 
     // Private-room lookup keys are based on the two current usernames.
     // Keep the key valid, but deliberately leave room.name unchanged.
-    if (membershipChanged && room.type === "private" && room.members.length === 2) {
+    if (
+      membershipChanged &&
+      room.type === "private" &&
+      room.members.length === 2
+    ) {
       room.privateKey = room.members
         .map((member) => cleanUsername(member).toLowerCase())
         .sort()
@@ -228,7 +222,7 @@ async function updateUsernameReferences(oldUsername, newUsername, req) {
       for (const member of room.members || []) {
         io.to(`username:${cleanUsername(member).toLowerCase()}`).emit(
           "rooms:updated",
-          { room: roomSummary }
+          { room: roomSummary },
         );
       }
     }
@@ -240,120 +234,103 @@ async function updateUsernameReferences(oldUsername, newUsername, req) {
 // POST /api/user/register
 // ------------------------------------------------------
 
-router.post(
-  "/register",
-  registerValidater,
-  validate,
-  async (req, res) => {
-    try {
-      const username = cleanUsername(req.body?.username);
-      const email = cleanEmail(req.body?.email);
-      const password = String(req.body?.password ?? "");
+router.post("/register", registerValidater, validate, async (req, res) => {
+  try {
+    const username = cleanUsername(req.body?.username);
+    const email = cleanEmail(req.body?.email);
+    const password = String(req.body?.password ?? "");
 
-      if (!username || !email || !password) {
-        return res.status(400).json({
-          success: false,
-          message: "Username, email, and password are required",
-        });
-      }
-
-      if (!USERNAME_PATTERN.test(username)) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Username must contain only English letters (A-Z, a-z) and be 2-30 characters long",
-        });
-      }
-
-      // Email lookup is case-sensitive.
-      const existingEmailUser = await findUserByEmail(email);
-
-      if (existingEmailUser) {
-        if (existingEmailUser.emailVerified) {
-          return res.status(409).json({
-            success: false,
-            message: "An account with this email already exists",
-          });
-        }
-
-        // Do not change an existing account's password
-        // or username through the registration endpoint.
-        const {
-          token,
-          hashedToken,
-          expire,
-        } = generateToken();
-
-        existingEmailUser.emailVerificationToken = hashedToken;
-        existingEmailUser.emailVerifcationexpire = expire;
-
-        await existingEmailUser.save();
-
-        await sendEmailVarification(
-          existingEmailUser.email,
-          token
-        );
-
-        return res.status(200).json({
-          success: true,
-          message:
-            "This email is not verified yet. A new verification link has been sent",
-        });
-      }
-
-      // Username lookup is case-insensitive.
-      const existingUsername =
-        await findUserByUsername(username);
-
-      if (existingUsername) {
-        return res.status(409).json({
-          success: false,
-          message: "This username is already taken",
-        });
-      }
-
-      const {
-        token,
-        hashedToken,
-        expire,
-      } = generateToken();
-
-      const hashedPassword = await bcrypt.hash(password, 12);
-
-      const user = await User.create({
-        username,
-        email,
-        password: hashedPassword,
-        emailVerified: false,
-        emailVerificationToken: hashedToken,
-        emailVerifcationexpire: expire,
-        rooms: [],
-      });
-
-      await sendEmailVarification(user.email, token);
-
-      return res.status(201).json({
-        success: true,
-        message:
-          "Registration successful. Please check your email to verify your account",
-      });
-    } catch (err) {
-      console.error("Registration error:", err);
-
-      if (err.code === 11000) {
-        return res.status(409).json({
-          success: false,
-          message: "Email or username is already in use",
-        });
-      }
-
-      return res.status(500).json({
+    if (!username || !email || !password) {
+      return res.status(400).json({
         success: false,
-        message: "Registration failed. Please try again",
+        message: "Username, email, and password are required",
       });
     }
+
+    if (!USERNAME_PATTERN.test(username)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Username must contain only English letters (A-Z, a-z) and be 2-30 characters long",
+      });
+    }
+
+    // Email lookup is case-sensitive.
+    const existingEmailUser = await findUserByEmail(email);
+
+    if (existingEmailUser) {
+      if (existingEmailUser.emailVerified) {
+        return res.status(409).json({
+          success: false,
+          message: "An account with this email already exists",
+        });
+      }
+
+      // Do not change an existing account's password
+      // or username through the registration endpoint.
+      const { token, hashedToken, expire } = generateToken();
+
+      existingEmailUser.emailVerificationToken = hashedToken;
+      existingEmailUser.emailVerifcationexpire = expire;
+
+      await existingEmailUser.save();
+
+      await sendEmailVarification(existingEmailUser.email, token);
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "This email is not verified yet. A new verification link has been sent",
+      });
+    }
+
+    // Username lookup is case-insensitive.
+    const existingUsername = await findUserByUsername(username);
+
+    if (existingUsername) {
+      return res.status(409).json({
+        success: false,
+        message: "This username is already taken",
+      });
+    }
+
+    const { token, hashedToken, expire } = generateToken();
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    const user = await User.create({
+      username,
+      email,
+      password: hashedPassword,
+      emailVerified: false,
+      emailVerificationToken: hashedToken,
+      emailVerifcationexpire: expire,
+      rooms: [],
+    });
+
+    await sendEmailVarification(user.email, token);
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Registration successful. Please check your email to verify your account",
+    });
+  } catch (err) {
+    console.error("Registration error:", err);
+
+    if (err.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Email or username is already in use",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Registration failed. Please try again",
+    });
   }
-);
+});
 
 // ------------------------------------------------------
 // VERIFY EMAIL
@@ -370,10 +347,7 @@ router.get("/email-verify", async (req, res) => {
       });
     }
 
-    const hashedToken = crypto
-      .createHash("sha256")
-      .update(token)
-      .digest("hex");
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
     const user = await User.findOne({
       emailVerificationToken: hashedToken,
@@ -439,10 +413,7 @@ router.post("/log-in", async (req, res) => {
       });
     }
 
-    const passwordMatches = await bcrypt.compare(
-      password,
-      user.password
-    );
+    const passwordMatches = await bcrypt.compare(password, user.password);
 
     if (!passwordMatches) {
       return res.status(401).json({
@@ -452,11 +423,7 @@ router.post("/log-in", async (req, res) => {
     }
 
     if (!user.emailVerified) {
-      const {
-        token,
-        hashedToken,
-        expire,
-      } = generateToken();
+      const { token, hashedToken, expire } = generateToken();
 
       user.emailVerifcationexpire = expire;
       user.emailVerificationToken = hashedToken;
@@ -491,7 +458,7 @@ router.post("/log-in", async (req, res) => {
       secret,
       {
         expiresIn: "1d",
-      }
+      },
     );
 
     res.cookie("token", jwtToken, {
@@ -578,7 +545,8 @@ router.post("/deleteUser", requireAuth, async (req, res) => {
     await removeUserFromAllRooms(io, user.username);
 
     await User.deleteOne({ _id: user._id });
-    if (io) io.in(`username:${user.username.toLowerCase()}`).disconnectSockets(true);
+    if (io)
+      io.in(`username:${user.username.toLowerCase()}`).disconnectSockets(true);
 
     res.clearCookie("token", COOKIE_OPTIONS);
 
@@ -601,88 +569,75 @@ router.post("/deleteUser", requireAuth, async (req, res) => {
 // POST /api/user/change-username
 // ------------------------------------------------------
 
-router.post(
-  "/change-username",
-  requireAuth,
-  async (req, res) => {
-    try {
-      const newUsername = cleanUsername(
-        req.body?.newUsername
-      );
+router.post("/change-username", requireAuth, async (req, res) => {
+  try {
+    const newUsername = cleanUsername(req.body?.newUsername);
 
-      if (!USERNAME_PATTERN.test(newUsername)) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Username must contain only English letters (A-Z, a-z) and be 2-30 characters long",
-        });
-      }
-
-      const user = await getAuthenticatedUser(req);
-
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: "Account not found",
-        });
-      }
-
-      const duplicate = await findUserByUsername(newUsername);
-
-      if (
-        duplicate &&
-        !duplicate._id.equals(user._id)
-      ) {
-        return res.status(409).json({
-          success: false,
-          message: "This username is already taken",
-        });
-      }
-
-      if (newUsername === user.username) {
-        return res.status(200).json({
-          success: true,
-          message: "Username is unchanged",
-          username: user.username,
-        });
-      }
-
-      const oldUsername = user.username;
-
-      // Update existing string-based references before renaming.
-      await updateUsernameReferences(
-        oldUsername,
-        newUsername,
-        req
-      );
-
-      user.username = newUsername;
-      await user.save();
-
-      const io = req.app.get("io");
-      if (io && oldUsername.toLowerCase() !== newUsername.toLowerCase()) {
-        io.in(`username:${oldUsername.toLowerCase()}`).socketsJoin(
-          `username:${newUsername.toLowerCase()}`
-        );
-        io.in(`username:${oldUsername.toLowerCase()}`).socketsLeave(
-          `username:${oldUsername.toLowerCase()}`
-        );
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Username changed successfully",
-        username: user.username,
-      });
-    } catch (err) {
-      console.error("Change username error:", err);
-
-      return res.status(500).json({
+    if (!USERNAME_PATTERN.test(newUsername)) {
+      return res.status(400).json({
         success: false,
-        message: "Failed to change username",
+        message:
+          "Username must contain only English letters (A-Z, a-z) and be 2-30 characters long",
       });
     }
+
+    const user = await getAuthenticatedUser(req);
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Account not found",
+      });
+    }
+
+    const duplicate = await findUserByUsername(newUsername);
+
+    if (duplicate && !duplicate._id.equals(user._id)) {
+      return res.status(409).json({
+        success: false,
+        message: "This username is already taken",
+      });
+    }
+
+    if (newUsername === user.username) {
+      return res.status(200).json({
+        success: true,
+        message: "Username is unchanged",
+        username: user.username,
+      });
+    }
+
+    const oldUsername = user.username;
+
+    // Update existing string-based references before renaming.
+    await updateUsernameReferences(oldUsername, newUsername, req);
+
+    user.username = newUsername;
+    await user.save();
+
+    const io = req.app.get("io");
+    if (io && oldUsername.toLowerCase() !== newUsername.toLowerCase()) {
+      io.in(`username:${oldUsername.toLowerCase()}`).socketsJoin(
+        `username:${newUsername.toLowerCase()}`,
+      );
+      io.in(`username:${oldUsername.toLowerCase()}`).socketsLeave(
+        `username:${oldUsername.toLowerCase()}`,
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Username changed successfully",
+      username: user.username,
+    });
+  } catch (err) {
+    console.error("Change username error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to change username",
+    });
   }
-);
+});
 
 module.exports = router;

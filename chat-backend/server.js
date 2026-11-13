@@ -16,10 +16,12 @@ const app = express();
 const httpServer = createServer(app);
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 
-app.use(cors({
-  origin: CLIENT_URL,
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: CLIENT_URL,
+    credentials: true,
+  }),
+);
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
@@ -43,7 +45,9 @@ socketHandler(io);
 const PORT = Number(process.env.PORT || 3000);
 
 connectDB()
-  .then(() => repairRooms().catch((err) => console.error("Room repair failed:", err)))
+  .then(() =>
+    repairRooms().catch((err) => console.error("Room repair failed:", err)),
+  )
   .then(() => {
     httpServer.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
