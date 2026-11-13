@@ -49,8 +49,8 @@ connectDB()
     repairRooms().catch((err) => console.error("Room repair failed:", err)),
   )
   .then(() => {
-    httpServer.listen(PORT, () => {
-      console.log(`Server is running on http://localhost:${PORT}`);
+    httpServer.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server is running on port ${PORT}`);
     });
   })
   .catch((err) => {
